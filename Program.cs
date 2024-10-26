@@ -1,8 +1,12 @@
+using Microsoft.EntityFrameworkCore;
+using TCSA.WebAPI.FlightData.Data;
+
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddEndpointsApiExplorer(); //swagger
-builder.Services.AddSwaggerGen(); // swagger
-builder.Services.AddControllers(); //added code 
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+builder.Services.AddControllers();
+builder.Services.AddDbContext<FlightsDbContext>(opt => opt.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 var app = builder.Build();
 
@@ -12,6 +16,6 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.MapControllers(); //added code
+app.MapControllers();
 
 app.Run();
