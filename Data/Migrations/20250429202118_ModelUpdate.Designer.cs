@@ -8,11 +8,11 @@ using TCSA.WebAPI.FlightData.Data;
 
 #nullable disable
 
-namespace TCSA.WebAPI.FlightData.Migrations
+namespace TCSA.WebAPI.FlightData.Data.Migrations
 {
     [DbContext(typeof(FlightsDbContext))]
-    [Migration("20241027111757_initial")]
-    partial class initial
+    [Migration("20250429202118_ModelUpdate")]
+    partial class ModelUpdate
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -44,8 +44,9 @@ namespace TCSA.WebAPI.FlightData.Migrations
                     b.Property<DateTime>("DepartureDateTime")
                         .HasColumnType("TEXT");
 
-                    b.Property<int>("FlightNumber")
-                        .HasColumnType("INTEGER");
+                    b.Property<string>("FlightNumber")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
 
                     b.Property<int>("PassengerCapacity")
                         .HasColumnType("INTEGER");

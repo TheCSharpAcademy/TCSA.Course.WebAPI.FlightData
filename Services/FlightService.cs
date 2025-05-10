@@ -1,70 +1,261 @@
-﻿using TCSA.WebAPI.FlightData.Data;
+﻿using System.Net;
+using AutoMapper;
+using Microsoft.EntityFrameworkCore;
+using TCSA.WebAPI.FlightData.Data;
+using TCSA.WebAPI.FlightData.Dtos;
 using TCSA.WebAPI.FlightData.Models;
 
 namespace TCSA.WebAPI.FlightData.Services;
 
-public interface IFlightService
-{
-    public List<Flight> GetFlights();
-    public Flight? GetFlightById(int id);
-    public Flight Createflight(Flight flight);
-    public Flight Updateflight(Flight flight);
-    public string? DeleteFlight(int id);
-}
-
 public class FlightService : IFlightService
 {
-    private readonly FlightsDbContext Context;
+    private readonly FlightsDbContext _dbContext;
+    private readonly IMapper _mapper;
 
-    public FlightService(FlightsDbContext context)
+    public FlightService(FlightsDbContext context, IMapper mapper)
     {
-        Context = context;
+        this._dbContext = context;
+        this._mapper = mapper;
     }
 
-    public Flight Createflight(Flight flight)
+    public async Task<ApiResponseDto<Flight>> CreateFlight(FlightApiRequestDto flight)
     {
-        var savedFlight = Context.Flights.Add(flight);
-        Context.SaveChanges();
-        return savedFlight.Entity;
+        Flight newFlight = _mapper.Map<Flight>(flight); // Use Mapper to map DTO to Flight entity
+        var savedFlight = await _dbContext.Flights.AddAsync(newFlight);
+        await _dbContext.SaveChangesAsync();
+        return new ApiResponseDto<Flight>
+        {
+            Data = savedFlight.Entity,
+            ResponseCode = HttpStatusCode.Created,
+        };
     }
 
-    public string? DeleteFlight(int id)
+    public async Task<ApiResponseDto<string?>> DeleteFlight(int id)
     {
-        Flight savedFlight = Context.Flights.Find(id);
+        Flight? savedFlight = await _dbContext.Flights.FindAsync(id);
 
         if (savedFlight == null)
         {
-            return null;
+            return new ApiResponseDto<string?>()
+            {
+                RequestFailed = true,
+                Data = null,
+                ResponseCode = HttpStatusCode.NotFound,
+                ErrorMessage = $"Resource with ID: {id} was not found",
+            };
         }
+        _dbContext.Flights.Remove(savedFlight);
 
-        Context.Flights.Remove(savedFlight);
+        await _dbContext.SaveChangesAsync();
 
-        return $"Successfully deleted flight with id: {id}";
-    }
-
-    public Flight? GetFlightById(int id)
-    {
-        Flight savedFlight = Context.Flights.Find(id);
-        return savedFlight == null ? null : savedFlight;
-    }
-
-    public List<Flight> GetFlights()
-    {
-        return Context.Flights.ToList();
-    }
-
-    public Flight Updateflight(Flight flight)
-    {
-        Flight savedFlight = Context.Flights.Find(flight.Id);
-
-        if (savedFlight == null)
+        return new ApiResponseDto<string?>()
         {
-            return null;
+            Data = null,
+            ResponseCode = HttpStatusCode.NoContent,
+        };
+    }
+
+    public async Task<ApiResponseDto<List<Flight>>> GetAllFlights(FlightOptions flightOptions)
+    {
+        var query = _dbContext
+            .Flights.Include(f => f.Airline)
+            .Include(f => f.DepartureAirports) // Include the DepartureAirports navigation property
+            .Include(f => f.ArrivalAirports) // Include the ArrivalAirports navigation property
+            .Include(f => f.Seats) // Include the Seats navigation property
+            .AsQueryable();
+        // AsQueryable() allows for? expandable filtering and the queries are stackable
+        var totalFlights = await query.CountAsync();
+
+        List<Flight>? flights;
+
+        if (!string.IsNullOrWhiteSpace(flightOptions.AirlineName))
+        {
+            query = query.Where(f => f.Airline.Name == flightOptions.AirlineName); // Filter by AirlineName
         }
 
-        Context.Entry(savedFlight).CurrentValues.SetValues(flight);
-        Context.SaveChanges();
+        if (!string.IsNullOrEmpty(flightOptions.DepartureAirportCode))
+        {
+            query = query.Where(f =>
+                f.DepartureAirports.Any(ap => ap.IataCode == flightOptions.DepartureAirportCode)
+            );
+        }
 
-        return savedFlight;
+        if (!string.IsNullOrEmpty(flightOptions.ArrivalAirportCode))
+        {
+            query = query.Where(f =>
+                f.DepartureAirports.Any(ap => ap.IataCode == flightOptions.DepartureAirportCode)
+            ); // Filter by ArrivalAirportCode
+        }
+
+        if (flightOptions.DepartureDateTime.HasValue) // Not a string
+        {
+            query = query.Where(f =>
+                f.DepartureDateTime.Date <= flightOptions.DepartureDateTime.Value.Date
+            ); // Filter by DepartureDateTime
+        }
+        if (flightOptions.ArrivalDateTime.HasValue) // Not a string
+        {
+            query = query.Where(f =>
+                f.ArrivalDateTime.Date <= flightOptions.ArrivalDateTime.Value.Date
+            ); // Filter by DepartureDateTime
+        }
+        if (flightOptions.SortBy == "id" || !string.IsNullOrEmpty(flightOptions.SortBy))
+        // allowing to send other values later on
+        {
+            switch (flightOptions.SortBy)
+            {
+                case "airline_name":
+                    query =
+                        flightOptions.SortOrder == "ASC"
+                            ? query.OrderByDescending(f => f.Airline.Name)
+                            : query.OrderBy(f => f.Airline.Name);
+                    query.OrderByDescending(f => f.Airline.Name);
+                    break;
+                case "flight_number":
+                    query =
+                        flightOptions.SortOrder == "ASC"
+                            ? query.OrderByDescending(f => f.FlightNumber)
+                            : query.OrderBy(f => f.FlightNumber);
+                    break;
+                case "departure_airport_code":
+                    query =
+                        flightOptions.SortOrder.ToUpper() == "ASC"
+                            ? query.OrderBy(f => f.DepartureAirports.Last().IataCode)
+                            : query.OrderByDescending(f => f.DepartureAirports.Last().IataCode);
+                    break;
+                case "arrival_airport_code":
+                    query =
+                        flightOptions.SortOrder.ToUpper() == "ASC"
+                            ? query.OrderBy(f => f.ArrivalAirports.Last().IataCode)
+                            : query.OrderByDescending(f => f.ArrivalAirports.Last().IataCode);
+                    break;
+                case "departure_date_time":
+                    query =
+                        flightOptions.SortOrder.ToUpper() == "ASC"
+                            ? query.OrderBy(f => f.DepartureDateTime)
+                            : query.OrderByDescending(f => f.DepartureDateTime);
+                    break;
+                case "arrival_date_time":
+                    query =
+                        flightOptions.SortOrder.ToUpper() == "ASC"
+                            ? query.OrderBy(f => f.ArrivalDateTime)
+                            : query.OrderByDescending(f => f.ArrivalDateTime);
+                    break;
+                case "passenger_count":
+                    query =
+                        flightOptions.SortOrder == "ASC"
+                            ? query.OrderBy(f => f.PassengerCapacity)
+                            : query.OrderByDescending(f => f.PassengerCapacity);
+                    break;
+                default:
+                    query =
+                        flightOptions.SortOrder == "ASC"
+                            ? query.OrderBy(f => f.Id)
+                            : query.OrderByDescending(f => f.Id);
+                    break;
+            }
+        }
+
+        if (!string.IsNullOrEmpty(flightOptions.Search))
+        {
+            string searchLower = flightOptions.Search.ToLower();
+            var searchChars = searchLower.ToCharArray();
+
+            var data = await query.ToListAsync();
+
+            flights = data.Where(f =>
+                    searchChars.All(c =>
+                        f.Airline.Name.ToLower().Contains(c)
+                        || f.FlightNumber.ToLower().Contains(c)
+                        || f.Airline.Name.ToLower().Contains(c)
+                        || f.DepartureAirports.Last().IataCode.ToLower().Contains(c)
+                        || f.ArrivalAirports.Last().IataCode.ToLower().Contains(c)
+                        || f.DepartureDateTime.ToString("yyyy-MM-ddTHH:mm:ss").ToLower().Contains(c)
+                        || f.ArrivalDateTime.ToString("yyyy-MM-ddTHH:mm:ss").ToLower().Contains(c)
+                        || f.PassengerCapacity.ToString().ToLower().Contains(c)
+                    )
+                )
+                .ToList();
+            flights =
+                (List<Flight>)
+                    data.Skip((flightOptions.PageNumber - 1) * flightOptions.PageSize)
+                        .Take(flightOptions.PageSize)
+                        .ToList();
+        }
+        else
+        {
+            query = query
+                .Skip((flightOptions.PageNumber - 1) * flightOptions.PageSize)
+                .Take(flightOptions.PageSize); //pagination
+
+            flights = await query.ToListAsync(); // Execute the query and get the results
+        }
+
+        bool hasPrevious = flightOptions.PageNumber > 1;
+        bool hasNext = (flightOptions.PageNumber * flightOptions.PageSize) < totalFlights;
+
+        return new ApiResponseDto<List<Flight>>
+        {
+            Data = flights,
+            ResponseCode = HttpStatusCode.OK,
+            TotalCount = totalFlights,
+            CurrentPage = flightOptions.PageNumber,
+            PageSize = flightOptions.PageSize,
+            HasPreviousPage = hasPrevious,
+            HasNextPage = hasNext,
+        };
+    }
+
+    public async Task<ApiResponseDto<Flight?>> GetFlightById(int id)
+    {
+        var result = await _dbContext
+            .Flights.Include(f => f.Airline)
+            .Include(f => f.DepartureAirports) // Include the DepartureAirports navigation property
+            .Include(f => f.ArrivalAirports) // Include the ArrivalAirports navigation property
+            .Include(f => f.Seats) // Include the Seats navigation property
+            .FirstOrDefaultAsync(f => f.Id == id); // Include the Airline navigation property
+
+        if (result is null)
+        {
+            return new ApiResponseDto<Flight?>()
+            {
+                RequestFailed = true,
+                Data = null,
+                ResponseCode = HttpStatusCode.NotFound,
+                ErrorMessage = $"Resource with ID: {id} was not found",
+            };
+        }
+
+        return new ApiResponseDto<Flight?>() { Data = result, ResponseCode = HttpStatusCode.OK };
+    }
+
+    public async Task<ApiResponseDto<Flight?>> UpdateFlight(
+        int id,
+        FlightApiRequestDto updatedFlight
+    )
+    {
+        Flight? savedFlight = await _dbContext.Flights.FindAsync(id);
+
+        if (savedFlight is null)
+        {
+            return new ApiResponseDto<Flight?>()
+            {
+                RequestFailed = true,
+                Data = null,
+                ResponseCode = HttpStatusCode.NotFound,
+                ErrorMessage = $"Resource with ID: {id} was not found",
+            };
+        }
+
+        savedFlight = _mapper.Map(updatedFlight, savedFlight); // Use Mapper to map DTO to Flight entity
+        savedFlight.Id = id; // Ensure the ID is set correctly
+
+        await _dbContext.SaveChangesAsync();
+
+        return new ApiResponseDto<Flight?>()
+        {
+            Data = savedFlight,
+            ResponseCode = HttpStatusCode.OK,
+        };
     }
 }
